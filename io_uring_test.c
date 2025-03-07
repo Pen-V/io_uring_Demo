@@ -245,7 +245,7 @@ int submit_to_sq(struct submitter *s, unsigned long* argsToSubmit, int count) {
         fprintf(stderr, "Unable to allocate memory\n");
         return 1;
     }
-    req->pd_cmnd = RV_CONF_IOMMU; //does this need to be a function input? 
+    req->pg_cmd = RV_CONF_IOMMU; //does this need to be a function input? 
     //what args should be given in reality? 
     //the user provide that from function call? 
     for(int i=0; i<count; i++){
@@ -284,6 +284,34 @@ int submit_to_sq(struct submitter *s, unsigned long* argsToSubmit, int count) {
         perror("io_uring_enter");
         return 1;
     }
+
+    return 0;
+}
+
+int main(void) {
+    struct submitter *s;
+
+    unsigned long arr[10];
+    for (int i=0; i<10; i++)
+        arr[i] = 0xc0ffee;
+
+    s = malloc(sizeof(*s));
+    if (!s) {
+        perror("malloc");
+        return 1;
+    }
+    memset(s, 0, sizeof(*s));
+
+    if(app_setup_uring(s)) {
+        fprintf(stderr, "Unable to setup uring!\n");
+        return 1;
+    }
+
+    if(submit_to_sq(s, arr, 10)) {
+        fprintf(stderr, "Error reading file\n");
+        return 1;
+    }
+    /* read_from_cq(s); */
 
     return 0;
 }

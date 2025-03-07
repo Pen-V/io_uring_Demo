@@ -3,7 +3,7 @@ ARCH = riscv
 CC = $(CROSS_COMPILE)gcc
 CFLAGS = -g -Og -I./include
 LDFLAGS = -g
-SRCS = uring_test.c
+SRCS = io_uring_test.c
 
 OBJS = $(SRCS:%.c=%.o)
 BINS = $(OBJS:%.o=%)
@@ -19,3 +19,5 @@ urings: $(OBJS)
 clean:
 	rm -f *.o run
 	rm -f *.out
+	rm -r include/
+	rm -f compile_commands.json
