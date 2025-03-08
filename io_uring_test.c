@@ -15,7 +15,8 @@ Revised implementation of io_uring
 
 #include <linux/io_uring.h>
 
-#define QUEUE_DEPTH 1
+//one level is fine -- don't worry about it 
+#define QUEUE_DEPTH 1 
 
 #define read_barrier()  __asm__ __volatile__("fence r, r"::);
 #define write_barrier() __asm__ __volatile__("fence w, w"::);
@@ -155,35 +156,34 @@ int app_setup_uring(struct submitter *s) {
 /*until this point no difference to uring_test */
 
 
-void read_from_cq(struct submitter *s, unsigned long* buf, int* count) {
-    //type of buf needs to determined by type of fi->retval
-        //chose to be unsigned long * because of %lx in the printf 
-    //will read from cq, put retval into buf[count] until ring is empty fails 
-    //count will be incremented by how many items are read 
-    //*count needs to be a non-negative number 
-
-    //should we always start count from 0? 
-    //since count is inputted by user 
-    //buf is a pointer, to an array ideally 
+int read_from_cq(struct submitter *s, int* buf, int count) {
+    //read up to count amount of retval from complete queue described in submitter
+    //Put the return value into buf 
+    //return the actual amount read from CQ
     
-
+    /*
+    struct definition is in /io_uring_Demo/include/linux/io_uring.h
+    struct peng_req{
+        unsigned long pg_cmd; 
+        unsigned long args[COHORT_MAX_ARGS]; 
+        int retval; 
+    }
+    */
+    
     struct peng_req *fi;
     struct app_io_cq_ring *cring = &s->cq_ring;
     struct io_uring_cqe *cqe;
     unsigned head, reaped = 0;
-    if(count == NULL){
-        printf("Count is NULL. Abort reading."); 
-        return; 
-    }
     if(buf == NULL){
         printf("buf is NULL. Abort reading."); 
-        return; 
+        return -1; 
     }
-    if((*count) < 0){
-        printf("Error, (*count) < 0. Abort reading."); 
-        return; 
+    if(count < 0){
+        printf("Error, count < 0. Abort reading."); 
+        return -1; 
     }
     head = *cring->head;
+    int read_amount = 0; 
     do {
         read_barrier();
         /*
@@ -193,34 +193,30 @@ void read_from_cq(struct submitter *s, unsigned long* buf, int* count) {
         if (head == *cring->tail)
             break;
         /* Get the entry */
-
-        //what is the order of operations in the next line 
         cqe = &cring->cqes[head & *s->cq_ring.ring_mask]; 
         fi = (struct peng_req*) cqe->user_data;
         if (cqe->res < 0)
             fprintf(stderr, "Error: %s\n", strerror(abs(cqe->res)));
         //lx is unsigned long printed in hexadecimal
         //printf("0x%lx\n", fi->retval);
-        buf[*count] = fi->retval; 
-
+        buf[read_amount] = fi->retval; 
         head++;
-        (*count) += 1; 
+        read_amount += 1; 
     } while (1);
 
     *cring->head = head;
     write_barrier();
+    return read_amount;
 }
 
-// unsigned long read_one_from_cq(struct submitter* s){
+//this function does 3 functions job in mini_liburing - prepares cmd, presend and submit? 
+int submit_to_sq(struct submitter *s, unsigned long cmd, unsigned long* argsToSubmit, int count) {
+//submit peng req with pg_cmd = cmd, args = argsToSubmit, count = number of args 
+//to submission queue described in submitter
 
-// }]
+//should we regulate what value cmd could be? 
 
-//allow what args to submit and the count? 
-//this function does 3 functions job in mini_liburing? prepares cmd, presend and submit? 
-int submit_to_sq(struct submitter *s, unsigned long* argsToSubmit, int count) {
-//again, type of argsToSubmit need to depend on type of req->args
-//need to see where peng_req struct definition is 
-//do we want to submit mutliple peng req at the same time? 
+
     if(argsToSubmit == NULL){
         printf("Abort submit_to_sq, argsToSubmit is NULL \n"); 
         return -1;  
@@ -234,8 +230,7 @@ int submit_to_sq(struct submitter *s, unsigned long* argsToSubmit, int count) {
         return -1;  
     }
     struct peng_req *req;
-
-    struct app_io_sq_ring *sring = &(s->sq_ring); //this order? 
+    struct app_io_sq_ring *sring = &(s->sq_ring);
 
     unsigned index = 0, tail = 0, next_tail = 0;
 
@@ -245,9 +240,9 @@ int submit_to_sq(struct submitter *s, unsigned long* argsToSubmit, int count) {
         fprintf(stderr, "Unable to allocate memory\n");
         return 1;
     }
-    req->pg_cmd = RV_CONF_IOMMU; //does this need to be a function input? 
-    //what args should be given in reality? 
-    //the user provide that from function call? 
+
+    //set up the member variables of req
+    req->pg_cmd = cmd; 
     for(int i=0; i<count; i++){
         req->args[i] = argsToSubmit[i]; 
     }
@@ -256,16 +251,18 @@ int submit_to_sq(struct submitter *s, unsigned long* argsToSubmit, int count) {
     next_tail = *sring->tail; 
     next_tail++; 
     read_barrier(); 
-    index = tail & *s->sq_ring.ring_mask; //what is the purpose of the mask 
+    index = tail & *s->sq_ring.ring_mask;
 
-    //this puts a new entry into submission queue? 
-    struct io_uring_sqe *sqe = &((s->sqes)[index]); //intended order?
-    sqe->fd = 0; //does this need to be a function input? 
-    sqe->flags = 0; //does this need to be a function input? 
-    sqe->opcode = IORING_OP_PENGPUSH; //constant? 
-    sqe->addr = (unsigned long) req;
-    sqe->len = 0;//does this need to be a function input? 
-    sqe->off = 0;//this is not set in mini_liburing? 
+    //Puts a new entry into submission queue
+    struct io_uring_sqe *sqe = &((s->sqes)[index]); 
+    //set up the other parameters of the entry 
+    //everything except user_data and addr are not determined by user input yet
+    sqe->fd = 0; //No need to be function input
+    sqe->flags = 0;  //No need to be function input
+    sqe->opcode = IORING_OP_PENGPUSH; //constant
+    sqe->addr = (unsigned long) req; //dont worry that this points to the same place as user_data 
+    sqe->len = 0; //No need to be function input
+    sqe->off = 0; //No need to be function input
     sqe->user_data = (unsigned long long) req; //why user data same pointer as addr
     
     //this part is in io_uring_submit in mini_liburing 
@@ -287,13 +284,16 @@ int submit_to_sq(struct submitter *s, unsigned long* argsToSubmit, int count) {
 
     return 0;
 }
-
+//testings 
 int main(void) {
+    int maxSize = COHORT_MAX_ARGS;
+    int exceedSize = maxSize + 1; 
     struct submitter *s;
-
     unsigned long arr[10];
-    for (int i=0; i<10; i++)
-        arr[i] = 0xc0ffee;
+    int retvals[20]; 
+    for (int i=0; i<10; i++){
+        arr[i] = 0xc0ffee + i;
+    }
 
     s = malloc(sizeof(*s));
     if (!s) {
@@ -302,15 +302,34 @@ int main(void) {
     }
     memset(s, 0, sizeof(*s));
 
+    printf("Setting up submitter\n"); 
     if(app_setup_uring(s)) {
         fprintf(stderr, "Unable to setup uring!\n");
         return 1;
     }
 
-    if(submit_to_sq(s, arr, 10)) {
+    printf("First submission with args count = %d\n", maxSize); 
+    if(submit_to_sq(s, RV_CONF_IOMMU, arr, maxSize)) {
         fprintf(stderr, "Error reading file\n");
         return 1;
     }
+    printf("Second submission with args count = %d should fail\n", exceedSize); 
+    if(submit_to_sq(s, RV_CONF_IOMMU, arr, exceedSize) > 0) {
+        fprintf(stderr, "Error submitting > max size file is successful\n");
+        return 1;
+    }
+    printf("Read from cq\n"); 
+    int read_amount = read_from_cq(s, retvals, 20); 
+//    if(read_amount != maxSize){
+//        fprintf(stderr, "Read %d, which is less than expected\n", read_amount);
+//  }
+    printf("read_amount = %d, Printing what is contained in retvals\n", read_amount); 
+    for(int i = 0; i < read_amount; i++){
+        printf("0x%lx\n", retvals[i]); 
+    }
+    printf("End of main\n"); 
+
+
     /* read_from_cq(s); */
 
     return 0;
