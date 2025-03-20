@@ -190,6 +190,8 @@ int read_from_cq(struct submitter *s, int* buf, int count) {
          * Remember, this is a ring buffer. If head == tail, it means that the
          * buffer is empty.
          * */
+        if(count == 0)
+            break; 
         if (head == *cring->tail)
             break;
         /* Get the entry */
@@ -201,7 +203,8 @@ int read_from_cq(struct submitter *s, int* buf, int count) {
         //printf("0x%lx\n", fi->retval);
         buf[read_amount] = fi->retval; 
         head++;
-        read_amount += 1; 
+        read_amount += 1;
+        count--; 
     } while (1);
 
     *cring->head = head;
